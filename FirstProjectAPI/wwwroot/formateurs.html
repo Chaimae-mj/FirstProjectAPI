@@ -1,0 +1,285 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Formateurs — Plateforme de Formation</title>
+  <link rel="stylesheet" href="/css/style.css?v=3" />
+</head>
+<body>
+  <div class="dash-shell">
+    <div class="dash-topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        PLATEFORME&nbsp;FORMATION
+      </div>
+      <div style="display:flex; align-items:center; gap:0.9rem;">
+        <span class="role-badge" id="role-badge">…</span>
+        <button class="btn-ghost" id="logout-btn">Se déconnecter</button>
+      </div>
+    </div>
+    <nav class="admin-nav" id="admin-nav"></nav>
+
+    <main class="page-main">
+      <div class="page-header">
+        <div>
+          <h1>Formateurs</h1>
+          <p>Gérez les profils des formateurs de la plateforme.</p>
+        </div>
+        <button class="btn-secondary" id="btn-new">+ Nouveau formateur</button>
+      </div>
+
+      <div class="table-wrap">
+        <div id="table-loading" class="table-loading">Chargement…</div>
+        <div id="table-error" class="table-error" style="display:none;"></div>
+        <table class="data-table" id="table" style="display:none;">
+          <thead>
+            <tr>
+              <th>Nom</th>
+              <th>Email</th>
+              <th>Spécialité</th>
+              <th>Téléphone</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="table-body"></tbody>
+        </table>
+        <div id="empty-state" class="empty-state" style="display:none;">
+          Aucun formateur pour le moment.
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Panneau création / édition -->
+  <div class="side-panel-overlay" id="panel-overlay">
+    <div class="side-panel">
+      <h2 id="panel-title">Nouveau formateur</h2>
+
+      <div class="alert alert-error" id="panel-alert"></div>
+
+      <form id="panel-form" novalidate>
+        <div class="field" id="field-nom">
+          <label for="nom">Nom</label>
+          <input type="text" id="nom" required />
+          <div class="error-msg">Le nom est requis.</div>
+        </div>
+
+        <div class="field" id="field-prenom">
+          <label for="prenom">Prénom</label>
+          <input type="text" id="prenom" required />
+          <div class="error-msg">Le prénom est requis.</div>
+        </div>
+
+        <div class="field" id="field-email">
+          <label for="email">Adresse e-mail</label>
+          <input type="email" id="email" required />
+          <div class="error-msg">Adresse e-mail invalide.</div>
+        </div>
+
+        <div class="field" id="field-telephone">
+          <label for="telephone">Téléphone <span style="text-transform:none;">(optionnel)</span></label>
+          <input type="tel" id="telephone" />
+        </div>
+
+        <div class="field" id="field-specialite">
+          <label for="specialite">Spécialité <span style="text-transform:none;">(optionnel)</span></label>
+          <input type="text" id="specialite" />
+        </div>
+
+        <div class="field" id="field-photo">
+          <label for="photo">URL Photo <span style="text-transform:none;">(optionnel)</span></label>
+          <input type="url" id="photo" placeholder="https://..." />
+        </div>
+
+        <div class="panel-actions">
+          <button type="submit" class="btn-primary" id="panel-submit">Enregistrer</button>
+          <button type="button" class="btn-secondary" id="panel-cancel">Annuler</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/api.js?v=3"></script>
+  <script>
+    let editingId = null;
+
+    const tableLoading = document.getElementById("table-loading");
+    const tableError = document.getElementById("table-error");
+    const table = document.getElementById("table");
+    const tableBody = document.getElementById("table-body");
+    const emptyState = document.getElementById("empty-state");
+
+    const panelOverlay = document.getElementById("panel-overlay");
+    const panelTitle = document.getElementById("panel-title");
+    const panelForm = document.getElementById("panel-form");
+    const panelAlert = document.getElementById("panel-alert");
+    const panelSubmit = document.getElementById("panel-submit");
+
+    const fields = {
+      nom: document.getElementById("nom"),
+      prenom: document.getElementById("prenom"),
+      email: document.getElementById("email"),
+      telephone: document.getElementById("telephone"),
+      specialite: document.getElementById("specialite"),
+      photo: document.getElementById("photo"),
+    };
+    const fieldWraps = {
+      nom: document.getElementById("field-nom"),
+      prenom: document.getElementById("field-prenom"),
+      email: document.getElementById("field-email"),
+    };
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str ?? "";
+      return div.innerHTML;
+    }
+
+    function openPanel(formateur) {
+      editingId = formateur ? formateur.id : null;
+      panelTitle.textContent = formateur ? "Modifier le formateur" : "Nouveau formateur";
+      fields.nom.value = formateur?.nom ?? "";
+      fields.prenom.value = formateur?.prenom ?? "";
+      fields.email.value = formateur?.email ?? "";
+      fields.telephone.value = formateur?.telephone ?? "";
+      fields.specialite.value = formateur?.specialite ?? "";
+      fields.photo.value = formateur?.photo ?? "";
+      Object.values(fieldWraps).forEach((w) => w.classList.remove("has-error"));
+      panelAlert.classList.remove("show");
+      panelOverlay.classList.add("show");
+      fields.nom.focus();
+    }
+
+    function closePanel() {
+      panelOverlay.classList.remove("show");
+      panelForm.reset();
+    }
+
+    document.getElementById("btn-new").addEventListener("click", () => openPanel(null));
+    document.getElementById("panel-cancel").addEventListener("click", closePanel);
+    panelOverlay.addEventListener("click", (e) => {
+      if (e.target === panelOverlay) closePanel();
+    });
+
+    function renderRow(f) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(f.prenom)} ${escapeHtml(f.nom)}</td>
+        <td>${escapeHtml(f.email)}</td>
+        <td>${escapeHtml(f.specialite) || "—"}</td>
+        <td>${escapeHtml(f.telephone) || "—"}</td>
+        <td class="col-actions">
+          <button class="btn-icon" data-action="edit">Modifier</button>
+          <button class="btn-icon danger" data-action="delete">Supprimer</button>
+        </td>
+      `;
+      tr.querySelector('[data-action="edit"]').addEventListener("click", () => openPanel(f));
+      tr.querySelector('[data-action="delete"]').addEventListener("click", () => handleDelete(f));
+      return tr;
+    }
+
+    async function loadTable() {
+      tableLoading.style.display = "block";
+      tableError.style.display = "none";
+      table.style.display = "none";
+      emptyState.style.display = "none";
+
+      try {
+        const formateurs = await formateursListRequest();
+        tableLoading.style.display = "none";
+
+        if (!formateurs || formateurs.length === 0) {
+          emptyState.style.display = "block";
+          return;
+        }
+
+        tableBody.innerHTML = "";
+        formateurs.forEach((f) => tableBody.appendChild(renderRow(f)));
+        table.style.display = "table";
+      } catch (err) {
+        tableLoading.style.display = "none";
+        tableError.textContent = "Impossible de charger les formateurs : " + err.message;
+        tableError.style.display = "block";
+      }
+    }
+
+    async function handleDelete(f) {
+      if (!confirm(`Supprimer le formateur « ${f.prenom} ${f.nom} » ?`)) return;
+      try {
+        await formateurDeleteRequest(f.id);
+        loadTable();
+      } catch (err) {
+        alert("Suppression impossible : " + err.message);
+      }
+    }
+
+    function validate() {
+      let ok = true;
+      if (!fields.nom.value.trim()) {
+        fieldWraps.nom.classList.add("has-error");
+        ok = false;
+      }
+      if (!fields.prenom.value.trim()) {
+        fieldWraps.prenom.classList.add("has-error");
+        ok = false;
+      }
+      const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.email.value.trim());
+      if (!emailOk) {
+        fieldWraps.email.classList.add("has-error");
+        ok = false;
+      }
+      return ok;
+    }
+
+    panelForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      panelAlert.classList.remove("show");
+      Object.values(fieldWraps).forEach((w) => w.classList.remove("has-error"));
+
+      if (!validate()) return;
+
+      const dto = {
+        nom: fields.nom.value.trim(),
+        prenom: fields.prenom.value.trim(),
+        email: fields.email.value.trim(),
+        telephone: fields.telephone.value.trim() || null,
+        specialite: fields.specialite.value.trim() || null,
+        photo: fields.photo.value.trim() || null,
+      };
+
+      panelSubmit.disabled = true;
+      panelSubmit.textContent = "Enregistrement…";
+
+      try {
+        if (editingId) {
+          await formateurUpdateRequest(editingId, dto);
+        } else {
+          await formateurCreateRequest(dto);
+        }
+        closePanel();
+        loadTable();
+      } catch (err) {
+        panelAlert.textContent = err.message || "Une erreur est survenue.";
+        panelAlert.classList.add("show");
+      } finally {
+        panelSubmit.disabled = false;
+        panelSubmit.textContent = "Enregistrer";
+      }
+    });
+
+    document.getElementById("logout-btn").addEventListener("click", () => {
+      clearAuth();
+      window.location.href = "/index.html";
+    });
+
+    (async () => {
+      const auth = await guardAdminPage();
+      if (!auth) return;
+      renderAdminNav("/formateurs.html");
+      loadTable();
+    })();
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,263 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Avatar IA — Plateforme de Formation</title>
+    <link rel="stylesheet" href="/css/style.css?v=3" />
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+</head>
+<body>
+    <div class="app-shell">
+        <div class="dash-topbar">
+            <div class="brand">
+                <span class="brand-mark"></span>
+                PLATEFORME&nbsp;FORMATION
+            </div>
+            <div style="display:flex; align-items:center; gap:0.9rem;">
+                <a href="/dashboard.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">← Tableau de bord</a>
+                <span class="role-badge" id="role-badge">…</span>
+                <button class="btn-ghost" id="logout-btn">Se déconnecter</button>
+            </div>
+        </div>
+
+        <main class="app-main">
+            <h1>Formateur IA (avatar)</h1>
+            <p class="page-subtitle">
+                Posez une question à voix live : l'avatar vous répond en vidéo et à l'oral.
+            </p>
+
+            <div id="not-apprenant-notice" class="empty-state" style="display:none;">
+                Cette fonctionnalité est réservée aux apprenants.
+            </div>
+
+            <div id="avatar-content" style="display:none;">
+
+                <div id="global-error" class="empty-state" style="display:none; color:var(--rouge-correction); max-width:640px; margin:0 auto 1rem;"></div>
+
+                <div class="avatar-stage" id="avatar-stage">
+                    <span class="avatar-status" id="avatar-status">Hors ligne</span>
+                    <span class="avatar-timer" id="avatar-timer" style="display:none;"></span>
+                    <div class="avatar-placeholder" id="avatar-placeholder">
+                        Cliquez sur "Démarrer" pour lancer une session avec le formateur IA.
+                    </div>
+                    <video id="avatar-video" autoplay playsinline style="display:none;"></video>
+                    <audio id="avatar-audio" autoplay style="display:none;"></audio>
+                </div>
+
+                <div class="avatar-subtitle empty" id="avatar-subtitle">
+                    Les réponses de l'avatar s'afficheront ici.
+                </div>
+
+                <div class="avatar-start-row" id="start-row">
+                    <button class="btn-primary" style="width:auto; padding:0.7rem 1.6rem;" id="start-btn">Démarrer une session</button>
+                </div>
+
+                <form class="avatar-controls" id="speak-form" style="display:none;">
+                    <input type="text" id="question-input" placeholder="Posez votre question…" maxlength="2000" disabled />
+                    <button type="submit" class="btn-primary" id="speak-btn" disabled>Envoyer</button>
+                    <button type="button" class="btn-cancel" id="stop-btn">Arrêter</button>
+                </form>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="/js/api.js?v=3"></script>
+    <script>
+    const auth = requireAuth();
+    const isApprenant = auth ? roleIn(auth.role, ["Apprenant"]) : false;
+
+    let room = null;
+    let sessionActive = false;
+    let timerInterval = null;
+    let remainingSeconds = 0;
+
+    const statusEl = document.getElementById("avatar-status");
+    const timerEl = document.getElementById("avatar-timer");
+    const placeholderEl = document.getElementById("avatar-placeholder");
+    const videoEl = document.getElementById("avatar-video");
+    const audioEl = document.getElementById("avatar-audio");
+    const subtitleEl = document.getElementById("avatar-subtitle");
+    const startRow = document.getElementById("start-row");
+    const startBtn = document.getElementById("start-btn");
+    const speakForm = document.getElementById("speak-form");
+    const questionInput = document.getElementById("question-input");
+    const speakBtn = document.getElementById("speak-btn");
+    const stopBtn = document.getElementById("stop-btn");
+    const globalErrorEl = document.getElementById("global-error");
+
+    function showGlobalError(message) {
+      globalErrorEl.textContent = message;
+      globalErrorEl.style.display = "block";
+    }
+
+    function clearGlobalError() {
+      globalErrorEl.style.display = "none";
+      globalErrorEl.textContent = "";
+    }
+
+    function formatTimer(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    function startTimer(maxSeconds) {
+      remainingSeconds = maxSeconds;
+      timerEl.style.display = "inline-block";
+      timerEl.textContent = formatTimer(remainingSeconds);
+      timerInterval = setInterval(() => {
+        remainingSeconds -= 1;
+        if (remainingSeconds <= 0) {
+          clearInterval(timerInterval);
+          stopSession();
+          return;
+        }
+        timerEl.textContent = formatTimer(remainingSeconds);
+      }, 1000);
+    }
+
+    function stopTimer() {
+      if (timerInterval) clearInterval(timerInterval);
+      timerEl.style.display = "none";
+    }
+
+    async function startSession() {
+      clearGlobalError();
+      startBtn.disabled = true;
+      startBtn.textContent = "Connexion…";
+      statusEl.textContent = "Connexion…";
+
+      try {
+        const result = await startAvatarSessionRequest();
+
+        room = new LivekitClient.Room();
+
+        room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+          if (track.kind === "video") {
+            track.attach(videoEl);
+            videoEl.style.display = "block";
+            placeholderEl.style.display = "none";
+          } else if (track.kind === "audio") {
+            track.attach(audioEl);
+          }
+        });
+
+        room.on(LivekitClient.RoomEvent.Disconnected, () => {
+          resetUiToStopped();
+        });
+
+        await room.connect(result.livekitUrl, result.livekitClientToken);
+
+        sessionActive = true;
+        statusEl.textContent = "En direct";
+        statusEl.classList.add("live");
+        startRow.style.display = "none";
+        speakForm.style.display = "flex";
+        questionInput.disabled = false;
+        speakBtn.disabled = false;
+        questionInput.focus();
+
+        startTimer(result.maxSessionDuration || 300);
+      } catch (err) {
+        statusEl.textContent = "Hors ligne";
+        startBtn.disabled = false;
+        startBtn.textContent = "Démarrer une session";
+
+        if (err.status === 409) {
+          showGlobalError("Une session est déjà active pour votre compte. Réessayez, ou arrêtez-la d'abord depuis un autre onglet.");
+        } else if (err.status === 502) {
+          showGlobalError("Le service avatar (HeyGen) n'a pas répondu correctement : " + err.message);
+        } else {
+          showGlobalError(err.message || "Impossible de démarrer la session.");
+        }
+      }
+    }
+
+    async function sendQuestion(e) {
+      e.preventDefault();
+      const question = questionInput.value.trim();
+      if (!question || question.length < 3) return;
+
+      clearGlobalError();
+      speakBtn.disabled = true;
+      speakBtn.textContent = "Envoi…";
+      questionInput.disabled = true;
+
+      try {
+        const res = await speakAvatarRequest(question);
+        subtitleEl.textContent = res.reponseTexte;
+        subtitleEl.classList.remove("empty");
+        questionInput.value = "";
+      } catch (err) {
+        if (err.status === 502) {
+          showGlobalError("Erreur du service IA ou voix (TTS) : " + err.message);
+        } else if (err.status === 404) {
+          showGlobalError("La session avatar n'est plus active. Redémarrez-la.");
+          resetUiToStopped();
+        } else {
+          showGlobalError(err.message || "Une erreur est survenue.");
+        }
+      } finally {
+        speakBtn.disabled = false;
+        speakBtn.textContent = "Envoyer";
+        questionInput.disabled = false;
+        questionInput.focus();
+      }
+    }
+
+    async function stopSession() {
+      stopTimer();
+      try {
+        await stopAvatarSessionRequest();
+      } catch (err) {
+        // On réinitialise l'UI même si l'appel échoue (session déjà terminée côté serveur, etc.)
+      }
+      if (room) {
+        room.disconnect();
+        room = null;
+      }
+      resetUiToStopped();
+    }
+
+    function resetUiToStopped() {
+      sessionActive = false;
+      stopTimer();
+      statusEl.textContent = "Hors ligne";
+      statusEl.classList.remove("live");
+      videoEl.style.display = "none";
+      placeholderEl.style.display = "block";
+      placeholderEl.textContent = "Cliquez sur \"Démarrer\" pour lancer une session avec le formateur IA.";
+      startRow.style.display = "block";
+      startBtn.disabled = false;
+      startBtn.textContent = "Démarrer une session";
+      speakForm.style.display = "none";
+      questionInput.disabled = true;
+      speakBtn.disabled = true;
+    }
+
+    function init() {
+      if (!auth) return;
+      document.getElementById("role-badge").textContent = roleLabel(auth.role);
+      document.getElementById("logout-btn").addEventListener("click", () => {
+        if (sessionActive) stopAvatarSessionRequest().catch(() => {});
+        clearAuth();
+        window.location.href = "/index.html";
+      });
+
+      if (!isApprenant) {
+        document.getElementById("not-apprenant-notice").style.display = "block";
+        return;
+      }
+      document.getElementById("avatar-content").style.display = "block";
+
+      startBtn.addEventListener("click", startSession);
+      speakForm.addEventListener("submit", sendQuestion);
+      stopBtn.addEventListener("click", stopSession);
+    }
+
+    init();
+    </script>
+</body>
+</html>

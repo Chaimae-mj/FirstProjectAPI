@@ -11,6 +11,13 @@ using Microsoft.IdentityModel.Tokens;
 
 using System.Text;
 var builder = WebApplication.CreateBuilder(args);
+
+var railwayPort = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrEmpty(railwayPort))
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{railwayPort}");
+}
+
 builder.Services.AddScoped<IFormateurService, FormateurService>();
 builder.Services.AddScoped<IReponseApprenantService, ReponseApprenantService>();
 builder.Services.AddScoped<IModaliteService, ModaliteService>();
@@ -68,9 +75,6 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
-// CORS — dev uniquement, pour permettre à la page de test HTML/LiveKit
-// (ouverte en file:// ou via un petit serveur local) d'appeler l'API.
-// À restreindre à des origines précises avant un déploiement en production.
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("DevTestPage", policy =>
@@ -119,9 +123,15 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// --- Frontend statique (wwwroot) : sert index.html, register.html, dashboard.html, css/, js/ ---
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseCors("DevTestPage");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.Run();

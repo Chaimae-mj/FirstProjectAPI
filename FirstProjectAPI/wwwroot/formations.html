@@ -1,0 +1,884 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Formations — Plateforme de Formation</title>
+    <link rel="stylesheet" href="/css/style.css?v=3" />
+</head>
+<body>
+    <div class="app-shell">
+        <div class="dash-topbar">
+            <div class="brand">
+                <span class="brand-mark"></span>
+                PLATEFORME&nbsp;FORMATION
+            </div>
+            <div style="display:flex; align-items:center; gap:0.9rem;">
+                <a href="/dashboard.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">← Tableau de bord</a>
+
+                <a href="/referentiels.html" class="btn-ghost" id="referentiels-link" style="text-decoration:none; display:none;">Catégories &amp; Formateurs</a>
+                <a href="/sessions.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">Sessions</a>
+                <span class="role-badge" id="role-badge">…</span>
+                <button class="btn-ghost" id="logout-btn">Se déconnecter</button>
+            </div>
+        </div>
+
+        <main class="app-main">
+            <h1>Formations</h1>
+            <p class="page-subtitle">
+                Formations, leurs modules et leurs modalités (cours / exercice / examen).
+                Cliquez sur une ligne pour déplier son contenu.
+            </p>
+
+            <div class="toolbar" id="formation-toolbar" style="display:none;">
+                <button class="btn-add" id="add-formation-btn">+ Nouvelle formation</button>
+            </div>
+
+            <div id="formation-add-form-slot"></div>
+
+            <div id="formations-loading" class="loading-text">Chargement des formations…</div>
+            <div id="formations-error" class="empty-state" style="display:none; color:var(--rouge-correction);"></div>
+            <div class="list-card" id="formations-list" style="display:none;"></div>
+            <div id="formations-empty" class="empty-state" style="display:none;">
+                Aucune formation pour l'instant.
+            </div>
+        </main>
+    </div>
+
+    <script src="/js/api.js?v=3"></script>
+    <script>
+    const auth = requireAuth();
+
+    // ---------- Rôle & permissions ----------
+    const canManage = auth ? roleIn(auth.role, ["Admin", "Formateur"]) : false;
+    const canDeleteFormation = auth ? roleIn(auth.role, ["Admin"]) : false;
+    const isApprenant = auth ? roleIn(auth.role, ["Apprenant"]) : false;
+        const isApprenantUser = auth ? roleIn(auth.role, ["Apprenant"]) : false;
+    // ---------- État en mémoire ----------
+    let categories = [];
+    let formateurs = [];
+    let formations = [];
+
+    let expandedFormationId = null;
+    let modulesCache = {};       // idFormation -> [Modulef]
+    let expandedModuleId = null;
+    let modalitesCache = {};     // idModule -> [Modalite]
+    let expandedModaliteId = null;
+    let questionsCache = {};     // idModalite -> [Question]
+    let quizAnswered = {};       // idModalite -> Map(idQuestion -> { correcte: bool, reponseDonnee })
+    let quizResultat = {};       // idModalite -> ResultatDto (dernier chargement)
+
+    let formationFormMode = null;         // null | { mode: "add" } | { mode: "edit", id }
+    let moduleFormMode = {};              // idFormation -> null | { mode: "add" } | { mode: "edit", id }
+    let modaliteFormMode = {};            // idModule -> null | { mode: "add" } | { mode: "edit", id }
+    let questionFormMode = {};            // idModalite -> null | { mode: "add" } | { mode: "edit", id }
+
+    const TYPE_LABELS = { 0: "Cours", 1: "Exercice", 2: "Examen" };
+    const TYPE_BADGE_CLASS = { 0: "badge-cours", 1: "badge-exercice", 2: "badge-examen" };
+
+    function escapeHtml(str) {
+      return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    // ---------- Chargement initial ----------
+    async function init() {
+      if (!auth) return;
+      document.getElementById("role-badge").textContent = roleLabel(auth.role);
+      document.getElementById("logout-btn").addEventListener("click", () => {
+        clearAuth();
+        window.location.href = "/index.html";
+      });
+
+      if (canManage) {
+        document.getElementById("formation-toolbar").style.display = "flex";
+        document.getElementById("add-formation-btn").addEventListener("click", () => {
+          formationFormMode = { mode: "add" };
+          renderFormationForm();
+        });
+      }
+        if (canDeleteFormation) {
+            document.getElementById("referentiels-link").style.display = "inline-block";
+        }
+      try {
+        const [cats, forms, allFormations] = await Promise.all([
+          categoriesRequest().catch(() => []),
+          formateursRequest().catch(() => []),
+          formationsRequest(),
+        ]);
+        categories = cats || [];
+        formateurs = forms || [];
+        formations = allFormations || [];
+        document.getElementById("formations-loading").style.display = "none";
+        renderFormationsList();
+      } catch (err) {
+        document.getElementById("formations-loading").style.display = "none";
+        const errEl = document.getElementById("formations-error");
+        errEl.textContent = "Impossible de charger les formations : " + err.message;
+        errEl.style.display = "block";
+      }
+    }
+
+    // ================= FORMATIONS =================
+
+    function renderFormationsList() {
+      const listEl = document.getElementById("formations-list");
+      const emptyEl = document.getElementById("formations-empty");
+
+      if (!formations.length) {
+        listEl.style.display = "none";
+        emptyEl.style.display = "block";
+        return;
+      }
+      emptyEl.style.display = "none";
+      listEl.style.display = "block";
+
+      listEl.innerHTML = formations.map((f) => {
+        const expanded = expandedFormationId === f.id;
+        const catName = f.categorie ? f.categorie.name : "Sans catégorie";
+        const formateurName = f.formateur ? `${f.formateur.prenom} ${f.formateur.nom}` : "Aucun formateur assigné";
+        return `
+          <div class="list-row ${expanded ? "expanded" : ""}" data-formation-id="${f.id}">
+            <div class="list-row-main" onclick="toggleFormation(${f.id})">
+              <span class="chevron">▶</span>
+              <div class="row-title">
+                <div class="titre">${escapeHtml(f.name)}</div>
+                <div class="meta">${escapeHtml(catName)} · ${escapeHtml(formateurName)}</div>
+              </div>
+             ${canManage ? `
+                  <div class="row-actions">
+                    <button class="icon-btn" title="Modifier" onclick="startEditModalite(${idModule}, ${m.id})">✎</button>
+                    <button class="icon-btn danger" title="Supprimer" onclick="removeModalite(${idModule}, ${m.id})">🗑</button>
+                  </div>
+                ` : (isApprenantUser && (m.type === 1 || m.type === 2)) ? `
+                  <a class="btn-inscription" style="text-decoration:none;" href="/examen.html?id=${m.id}&titre=${encodeURIComponent(m.titre)}&type=${m.type}">
+                    Passer
+                  </a>
+                ` : ""}
+            </div>
+            ${expanded ? `<div class="expand-panel" id="formation-panel-${f.id}"></div>` : ""}
+          </div>
+        `;
+      }).join("");
+
+      if (expandedFormationId != null) {
+        renderModulesPanel(expandedFormationId);
+      }
+    }
+
+    function toggleFormation(id) {
+      expandedFormationId = expandedFormationId === id ? null : id;
+      expandedModuleId = null; // on referme les modules ouverts en changeant de formation
+      renderFormationsList();
+      if (expandedFormationId != null && !modulesCache[expandedFormationId]) {
+        loadModules(expandedFormationId);
+      }
+    }
+
+    function renderFormationForm() {
+      const slot = document.getElementById("formation-add-form-slot");
+      if (!formationFormMode) {
+        slot.innerHTML = "";
+        return;
+      }
+
+      const isEdit = formationFormMode.mode === "edit";
+      const editing = isEdit ? formations.find((f) => f.id === formationFormMode.id) : null;
+
+      const catOptions = categories.map((c) =>
+        `<option value="${c.id}" ${editing && editing.idCategorie === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`
+      ).join("");
+
+      const formateurOptions = `<option value="">Aucun</option>` + formateurs.map((f) =>
+        `<option value="${f.id}" ${editing && editing.formateurId === f.id ? "selected" : ""}>${escapeHtml(f.prenom + " " + f.nom)}</option>`
+      ).join("");
+
+      slot.innerHTML = `
+        <div class="inline-form">
+          <div class="form-row">
+            <div class="field">
+              <label for="formation-name">Nom de la formation</label>
+              <input type="text" id="formation-name" value="${editing ? escapeHtml(editing.name) : ""}" placeholder="Ex. Développement Web Full-Stack" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label for="formation-categorie">Catégorie</label>
+              <select id="formation-categorie">${catOptions || '<option value="">Aucune catégorie disponible</option>'}</select>
+            </div>
+            ${!isEdit ? `
+              <div class="field">
+                <label for="formation-formateur">Formateur (optionnel)</label>
+                <select id="formation-formateur">${formateurOptions}</select>
+              </div>
+            ` : ""}
+          </div>
+          ${isEdit ? `<p class="form-note">Le formateur assigné ne peut pas être modifié depuis cet écran pour le moment.</p>` : ""}
+          <div id="formation-form-error" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+          <div class="form-actions">
+            <button class="btn-primary" style="margin-top:0;" onclick="submitFormationForm()">${isEdit ? "Enregistrer" : "Créer"}</button>
+            <button class="btn-cancel" onclick="cancelFormationForm()">Annuler</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function cancelFormationForm() {
+      formationFormMode = null;
+      renderFormationForm();
+    }
+
+    function editFormation(id) {
+      formationFormMode = { mode: "edit", id };
+      renderFormationForm();
+    }
+
+    async function submitFormationForm() {
+      const name = document.getElementById("formation-name").value.trim();
+      const idCategorie = parseInt(document.getElementById("formation-categorie").value, 10);
+      const errEl = document.getElementById("formation-form-error");
+      errEl.style.display = "none";
+
+      if (!name || !idCategorie) {
+        errEl.textContent = "Le nom et la catégorie sont requis.";
+        errEl.style.display = "block";
+        return;
+      }
+
+      try {
+        if (formationFormMode.mode === "edit") {
+          await updateFormationRequest(formationFormMode.id, { name, idCategorie });
+        } else {
+          const formateurSelect = document.getElementById("formation-formateur");
+          const formateurId = formateurSelect && formateurSelect.value ? parseInt(formateurSelect.value, 10) : null;
+          await createFormationRequest(idCategorie, { name, formateurId });
+        }
+        formationFormMode = null;
+        formations = await formationsRequest();
+        renderFormationForm();
+        renderFormationsList();
+      } catch (err) {
+        errEl.textContent = err.message || "Une erreur est survenue.";
+        errEl.style.display = "block";
+      }
+    }
+
+    async function removeFormation(id) {
+      if (!confirm("Supprimer définitivement cette formation ainsi que ses modules et modalités ?")) return;
+      try {
+        await deleteFormationRequest(id);
+        if (expandedFormationId === id) expandedFormationId = null;
+        formations = await formationsRequest();
+        renderFormationsList();
+      } catch (err) {
+        alert("Impossible de supprimer : " + err.message);
+      }
+    }
+
+    // ================= MODULES =================
+
+    async function loadModules(idFormation) {
+      const panel = document.getElementById(`formation-panel-${idFormation}`);
+      if (panel) panel.innerHTML = `<div class="loading-text">Chargement des modules…</div>`;
+      try {
+        modulesCache[idFormation] = await modulesByFormationRequest(idFormation);
+      } catch (err) {
+        modulesCache[idFormation] = [];
+      }
+      renderModulesPanel(idFormation);
+    }
+
+    function renderModulesPanel(idFormation) {
+      const panel = document.getElementById(`formation-panel-${idFormation}`);
+      if (!panel) return;
+
+      const modules = modulesCache[idFormation];
+      if (!modules) {
+        panel.innerHTML = `<div class="loading-text">Chargement des modules…</div>`;
+        return;
+      }
+
+      const addBtn = canManage ? `<div class="toolbar"><button class="btn-add" onclick="startAddModule(${idFormation})">+ Nouveau module</button></div>` : "";
+      const formSlot = `<div id="module-form-slot-${idFormation}"></div>`;
+
+      const rows = modules.length ? `
+        <div class="list-card">
+          ${modules.slice().sort((a, b) => a.ordre - b.ordre).map((m) => {
+            const expanded = expandedModuleId === m.id;
+            return `
+              <div class="list-row ${expanded ? "expanded" : ""}" data-module-id="${m.id}">
+                <div class="list-row-main" onclick="toggleModule(${m.id})">
+                  <span class="chevron">▶</span>
+                  <div class="row-title">
+                    <div class="titre">${escapeHtml(m.titre)}</div>
+                    <div class="meta">Ordre ${m.ordre}</div>
+                  </div>
+                  ${canManage ? `
+                    <div class="row-actions" onclick="event.stopPropagation()">
+                      <button class="icon-btn" title="Modifier" onclick="startEditModule(${idFormation}, ${m.id})">✎</button>
+                      <button class="icon-btn danger" title="Supprimer" onclick="removeModule(${idFormation}, ${m.id})">🗑</button>
+                    </div>
+                  ` : ""}
+                </div>
+                ${expanded ? `<div class="expand-panel" id="module-panel-${m.id}"></div>` : ""}
+              </div>
+            `;
+          }).join("")}
+        </div>
+      ` : `<div class="empty-state">Aucun module dans cette formation.</div>`;
+
+      panel.innerHTML = addBtn + formSlot + rows;
+
+      if (expandedModuleId != null && modules.some((m) => m.id === expandedModuleId)) {
+        renderModalitesPanel(expandedModuleId);
+      }
+    }
+
+    function toggleModule(id) {
+      expandedModuleId = expandedModuleId === id ? null : id;
+      const idFormation = expandedFormationId;
+      renderModulesPanel(idFormation);
+      if (expandedModuleId != null && !modalitesCache[expandedModuleId]) {
+        loadModalites(expandedModuleId);
+      }
+    }
+
+    function moduleFormHtml(idFormation, editing) {
+      return `
+        <div class="inline-form">
+          <div class="form-row">
+            <div class="field">
+              <label for="module-titre-${idFormation}">Titre du module</label>
+              <input type="text" id="module-titre-${idFormation}" value="${editing ? escapeHtml(editing.titre) : ""}" placeholder="Ex. Introduction à JavaScript" />
+            </div>
+            <div class="field" style="max-width:120px;">
+              <label for="module-ordre-${idFormation}">Ordre</label>
+              <input type="number" id="module-ordre-${idFormation}" min="1" value="${editing ? editing.ordre : (modulesCache[idFormation]?.length || 0) + 1}" />
+            </div>
+          </div>
+          <div id="module-form-error-${idFormation}" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+          <div class="form-actions">
+            <button class="btn-primary" style="margin-top:0;" onclick="submitModuleForm(${idFormation})">${editing ? "Enregistrer" : "Créer"}</button>
+            <button class="btn-cancel" onclick="cancelModuleForm(${idFormation})">Annuler</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function startAddModule(idFormation) {
+      moduleFormMode[idFormation] = { mode: "add" };
+      document.getElementById(`module-form-slot-${idFormation}`).innerHTML = moduleFormHtml(idFormation, null);
+    }
+
+    function startEditModule(idFormation, id) {
+      const editing = modulesCache[idFormation].find((m) => m.id === id);
+      moduleFormMode[idFormation] = { mode: "edit", id };
+      document.getElementById(`module-form-slot-${idFormation}`).innerHTML = moduleFormHtml(idFormation, editing);
+    }
+
+    function cancelModuleForm(idFormation) {
+      moduleFormMode[idFormation] = null;
+      document.getElementById(`module-form-slot-${idFormation}`).innerHTML = "";
+    }
+
+    async function submitModuleForm(idFormation) {
+      const titre = document.getElementById(`module-titre-${idFormation}`).value.trim();
+      const ordre = parseInt(document.getElementById(`module-ordre-${idFormation}`).value, 10);
+      const errEl = document.getElementById(`module-form-error-${idFormation}`);
+      errEl.style.display = "none";
+
+      if (!titre || !ordre) {
+        errEl.textContent = "Le titre et l'ordre sont requis.";
+        errEl.style.display = "block";
+        return;
+      }
+
+      const mode = moduleFormMode[idFormation];
+      try {
+        if (mode.mode === "edit") {
+          await updateModuleRequest(mode.id, { titre, ordre });
+        } else {
+          await createModuleRequest(idFormation, { titre, ordre });
+        }
+        moduleFormMode[idFormation] = null;
+        await loadModules(idFormation);
+      } catch (err) {
+        errEl.textContent = err.message || "Une erreur est survenue.";
+        errEl.style.display = "block";
+      }
+    }
+
+    async function removeModule(idFormation, id) {
+      if (!confirm("Supprimer ce module ainsi que ses modalités ?")) return;
+      try {
+        await deleteModuleRequest(id);
+        if (expandedModuleId === id) expandedModuleId = null;
+        await loadModules(idFormation);
+      } catch (err) {
+        alert("Impossible de supprimer : " + err.message);
+      }
+    }
+
+    // ================= MODALITÉS =================
+
+    async function loadModalites(idModule) {
+      const panel = document.getElementById(`module-panel-${idModule}`);
+      if (panel) panel.innerHTML = `<div class="loading-text">Chargement des modalités…</div>`;
+      try {
+        modalitesCache[idModule] = await modalitesByModuleRequest(idModule);
+      } catch (err) {
+        modalitesCache[idModule] = [];
+      }
+      renderModalitesPanel(idModule);
+    }
+
+    function renderModalitesPanel(idModule) {
+      const panel = document.getElementById(`module-panel-${idModule}`);
+      if (!panel) return;
+
+      const modalites = modalitesCache[idModule];
+      if (!modalites) {
+        panel.innerHTML = `<div class="loading-text">Chargement des modalités…</div>`;
+        return;
+      }
+
+      const addBtn = canManage ? `<div class="toolbar"><button class="btn-add" onclick="startAddModalite(${idModule})">+ Nouvelle modalité</button></div>` : "";
+      const formSlot = `<div id="modalite-form-slot-${idModule}"></div>`;
+
+      const rows = modalites.length ? `
+        <div class="list-card">
+          ${modalites.slice().sort((a, b) => a.ordre - b.ordre).map((m) => {
+            const expanded = expandedModaliteId === m.id;
+            return `
+            <div class="list-row ${expanded ? "expanded" : ""}" data-modalite-id="${m.id}">
+              <div class="list-row-main" onclick="toggleModalite(${idModule}, ${m.id})">
+                <span class="chevron">▶</span>
+                <div class="row-title">
+                  <div class="titre">
+                    ${escapeHtml(m.titre)}
+                    <span class="badge-type ${TYPE_BADGE_CLASS[m.type] || ""}">${TYPE_LABELS[m.type] || m.type}</span>
+                  </div>
+                  <div class="meta">
+                    Ordre ${m.ordre}${m.dureeMinutes ? ` · ${m.dureeMinutes} min` : ""}
+                  </div>
+                </div>
+                ${canManage ? `
+                  <div class="row-actions" onclick="event.stopPropagation()">
+                    <button class="icon-btn" title="Modifier" onclick="startEditModalite(${idModule}, ${m.id})">✎</button>
+                    <button class="icon-btn danger" title="Supprimer" onclick="removeModalite(${idModule}, ${m.id})">🗑</button>
+                  </div>
+                ` : ""}
+              </div>
+              ${expanded ? `<div class="expand-panel" id="modalite-panel-${m.id}"></div>` : ""}
+            </div>
+          `;
+          }).join("")}
+        </div>
+      ` : `<div class="empty-state">Aucune modalité dans ce module.</div>`;
+
+      panel.innerHTML = addBtn + formSlot + rows;
+
+      if (expandedModaliteId != null && modalites.some((m) => m.id === expandedModaliteId)) {
+        renderQuestionsPanel(expandedModaliteId);
+      }
+    }
+
+    function toggleModalite(idModule, id) {
+      expandedModaliteId = expandedModaliteId === id ? null : id;
+      renderModalitesPanel(idModule);
+      if (expandedModaliteId != null && !questionsCache[expandedModaliteId]) {
+        loadQuestions(expandedModaliteId);
+      }
+    }
+
+    function modaliteFormHtml(idModule, editing) {
+      const typeOptions = Object.entries(TYPE_LABELS).map(([val, label]) =>
+        `<option value="${val}" ${editing && editing.type === parseInt(val, 10) ? "selected" : ""}>${label}</option>`
+      ).join("");
+
+      return `
+        <div class="inline-form">
+          <div class="form-row">
+            <div class="field">
+              <label for="modalite-titre-${idModule}">Titre</label>
+              <input type="text" id="modalite-titre-${idModule}" value="${editing ? escapeHtml(editing.titre) : ""}" placeholder="Ex. Les variables en JavaScript" />
+            </div>
+            <div class="field" style="max-width:150px;">
+              <label for="modalite-type-${idModule}">Type</label>
+              <select id="modalite-type-${idModule}">${typeOptions}</select>
+            </div>
+            <div class="field" style="max-width:100px;">
+              <label for="modalite-ordre-${idModule}">Ordre</label>
+              <input type="number" id="modalite-ordre-${idModule}" min="1" value="${editing ? editing.ordre : (modalitesCache[idModule]?.length || 0) + 1}" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="modalite-contenu-${idModule}">Contenu (optionnel)</label>
+            <textarea id="modalite-contenu-${idModule}" placeholder="Support de cours, énoncé...">${editing && editing.contenu ? escapeHtml(editing.contenu) : ""}</textarea>
+          </div>
+          <div class="form-row">
+            <div class="field" style="max-width:200px;">
+              <label for="modalite-duree-${idModule}">Durée en minutes (optionnel, utile pour un examen)</label>
+              <input type="number" id="modalite-duree-${idModule}" min="1" value="${editing && editing.dureeMinutes ? editing.dureeMinutes : ""}" />
+            </div>
+          </div>
+          <div id="modalite-form-error-${idModule}" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+          <div class="form-actions">
+            <button class="btn-primary" style="margin-top:0;" onclick="submitModaliteForm(${idModule})">${editing ? "Enregistrer" : "Créer"}</button>
+            <button class="btn-cancel" onclick="cancelModaliteForm(${idModule})">Annuler</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function startAddModalite(idModule) {
+      modaliteFormMode[idModule] = { mode: "add" };
+      document.getElementById(`modalite-form-slot-${idModule}`).innerHTML = modaliteFormHtml(idModule, null);
+    }
+
+    function startEditModalite(idModule, id) {
+      const editing = modalitesCache[idModule].find((m) => m.id === id);
+      modaliteFormMode[idModule] = { mode: "edit", id };
+      document.getElementById(`modalite-form-slot-${idModule}`).innerHTML = modaliteFormHtml(idModule, editing);
+    }
+
+    function cancelModaliteForm(idModule) {
+      modaliteFormMode[idModule] = null;
+      document.getElementById(`modalite-form-slot-${idModule}`).innerHTML = "";
+    }
+
+    async function submitModaliteForm(idModule) {
+      const titre = document.getElementById(`modalite-titre-${idModule}`).value.trim();
+      const type = parseInt(document.getElementById(`modalite-type-${idModule}`).value, 10);
+      const ordre = parseInt(document.getElementById(`modalite-ordre-${idModule}`).value, 10);
+      const contenu = document.getElementById(`modalite-contenu-${idModule}`).value.trim();
+      const dureeRaw = document.getElementById(`modalite-duree-${idModule}`).value;
+      const dureeMinutes = dureeRaw ? parseInt(dureeRaw, 10) : null;
+      const errEl = document.getElementById(`modalite-form-error-${idModule}`);
+      errEl.style.display = "none";
+
+      if (!titre || !ordre) {
+        errEl.textContent = "Le titre et l'ordre sont requis.";
+        errEl.style.display = "block";
+        return;
+      }
+
+      const payload = { titre, type, ordre, contenu: contenu || null, dureeMinutes };
+      const mode = modaliteFormMode[idModule];
+
+      try {
+        if (mode.mode === "edit") {
+          await updateModaliteRequest(mode.id, payload);
+        } else {
+          await createModaliteRequest(idModule, payload);
+        }
+        modaliteFormMode[idModule] = null;
+        await loadModalites(idModule);
+      } catch (err) {
+        errEl.textContent = err.message || "Une erreur est survenue.";
+        errEl.style.display = "block";
+      }
+    }
+
+    async function removeModalite(idModule, id) {
+      if (!confirm("Supprimer cette modalité ?")) return;
+      try {
+        await deleteModaliteRequest(id);
+        await loadModalites(idModule);
+      } catch (err) {
+        alert("Impossible de supprimer : " + err.message);
+      }
+    }
+
+    // ================= QUESTIONS (Admin/Formateur) & QUIZ (Apprenant) =================
+
+    async function loadQuestions(idModalite) {
+      const panel = document.getElementById(`modalite-panel-${idModalite}`);
+      if (panel) panel.innerHTML = `<div class="loading-text">Chargement des questions…</div>`;
+      try {
+        questionsCache[idModalite] = await questionsByModaliteRequest(idModalite);
+      } catch (err) {
+        questionsCache[idModalite] = [];
+      }
+
+      if (isApprenant) {
+        try {
+          quizResultat[idModalite] = await resultatRequest(idModalite);
+        } catch (err) {
+          quizResultat[idModalite] = null;
+        }
+      }
+
+      renderQuestionsPanel(idModalite);
+    }
+
+    function renderQuestionsPanel(idModalite) {
+      const panel = document.getElementById(`modalite-panel-${idModalite}`);
+      if (!panel) return;
+
+      const questions = questionsCache[idModalite];
+      if (!questions) {
+        panel.innerHTML = `<div class="loading-text">Chargement des questions…</div>`;
+        return;
+      }
+
+      if (canManage) {
+        panel.innerHTML = renderQuestionsAdmin(idModalite, questions);
+      } else if (isApprenant) {
+        panel.innerHTML = renderQuiz(idModalite, questions);
+      } else {
+        panel.innerHTML = questions.length
+          ? `<div class="empty-state">${questions.length} question(s) dans cette modalité.</div>`
+          : `<div class="empty-state">Aucune question dans cette modalité.</div>`;
+      }
+    }
+
+    // ---------- Vue Admin / Formateur : CRUD des questions ----------
+
+    function renderQuestionsAdmin(idModalite, questions) {
+      const addBtn = `<div class="toolbar"><button class="btn-add" onclick="startAddQuestion(${idModalite})">+ Nouvelle question</button></div>`;
+      const formSlot = `<div id="question-form-slot-${idModalite}"></div>`;
+
+      const rows = questions.length ? `
+        <div class="list-card">
+          ${questions.map((q) => {
+            const options = [q.option1, q.option2, q.option3, q.option4].filter(Boolean);
+            return `
+            <div class="list-row">
+              <div class="list-row-main" style="cursor:default; align-items:flex-start;">
+                <span class="chevron" style="visibility:hidden;">▶</span>
+                <div class="row-title">
+                  <div class="titre">${escapeHtml(q.enonce)}</div>
+                  <div class="meta">
+                    ${options.length ? "QCM : " + options.map(escapeHtml).join(" · ") + " — " : "Réponse libre — "}
+                    <strong>Réponse correcte : ${escapeHtml(q.reponseCorrecte)}</strong>
+                  </div>
+                </div>
+                <div class="row-actions">
+                  <button class="icon-btn" title="Modifier" onclick="startEditQuestion(${idModalite}, ${q.id})">✎</button>
+                  <button class="icon-btn danger" title="Supprimer" onclick="removeQuestion(${idModalite}, ${q.id})">🗑</button>
+                </div>
+              </div>
+            </div>
+          `;
+          }).join("")}
+        </div>
+      ` : `<div class="empty-state">Aucune question pour l'instant.</div>`;
+
+      return addBtn + formSlot + rows;
+    }
+
+    function questionFormHtml(idModalite, editing) {
+      const opt = (n) => editing && editing[`option${n}`] ? escapeHtml(editing[`option${n}`]) : "";
+      return `
+        <div class="inline-form">
+          <div class="field">
+            <label for="question-enonce-${idModalite}">Énoncé</label>
+            <textarea id="question-enonce-${idModalite}" placeholder="Ex. Que fait le mot-clé 'const' en JavaScript ?">${editing ? escapeHtml(editing.enonce) : ""}</textarea>
+          </div>
+          <p class="form-note">Laissez les options vides pour une question à réponse libre (pas un QCM).</p>
+          <div class="form-row">
+            <div class="field">
+              <label for="question-opt1-${idModalite}">Option 1 (optionnel)</label>
+              <input type="text" id="question-opt1-${idModalite}" value="${opt(1)}" />
+            </div>
+            <div class="field">
+              <label for="question-opt2-${idModalite}">Option 2 (optionnel)</label>
+              <input type="text" id="question-opt2-${idModalite}" value="${opt(2)}" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label for="question-opt3-${idModalite}">Option 3 (optionnel)</label>
+              <input type="text" id="question-opt3-${idModalite}" value="${opt(3)}" />
+            </div>
+            <div class="field">
+              <label for="question-opt4-${idModalite}">Option 4 (optionnel)</label>
+              <input type="text" id="question-opt4-${idModalite}" value="${opt(4)}" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="question-correcte-${idModalite}">Réponse correcte</label>
+            <input type="text" id="question-correcte-${idModalite}" value="${editing ? escapeHtml(editing.reponseCorrecte) : ""}" placeholder="Doit correspondre exactement à une des options si QCM" />
+          </div>
+          <div id="question-form-error-${idModalite}" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+          <div class="form-actions">
+            <button class="btn-primary" style="margin-top:0;" onclick="submitQuestionForm(${idModalite})">${editing ? "Enregistrer" : "Créer"}</button>
+            <button class="btn-cancel" onclick="cancelQuestionForm(${idModalite})">Annuler</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function startAddQuestion(idModalite) {
+      questionFormMode[idModalite] = { mode: "add" };
+      document.getElementById(`question-form-slot-${idModalite}`).innerHTML = questionFormHtml(idModalite, null);
+    }
+
+    function startEditQuestion(idModalite, id) {
+      const editing = questionsCache[idModalite].find((q) => q.id === id);
+      questionFormMode[idModalite] = { mode: "edit", id };
+      document.getElementById(`question-form-slot-${idModalite}`).innerHTML = questionFormHtml(idModalite, editing);
+    }
+
+    function cancelQuestionForm(idModalite) {
+      questionFormMode[idModalite] = null;
+      document.getElementById(`question-form-slot-${idModalite}`).innerHTML = "";
+    }
+
+    async function submitQuestionForm(idModalite) {
+      const enonce = document.getElementById(`question-enonce-${idModalite}`).value.trim();
+      const option1 = document.getElementById(`question-opt1-${idModalite}`).value.trim();
+      const option2 = document.getElementById(`question-opt2-${idModalite}`).value.trim();
+      const option3 = document.getElementById(`question-opt3-${idModalite}`).value.trim();
+      const option4 = document.getElementById(`question-opt4-${idModalite}`).value.trim();
+      const reponseCorrecte = document.getElementById(`question-correcte-${idModalite}`).value.trim();
+      const errEl = document.getElementById(`question-form-error-${idModalite}`);
+      errEl.style.display = "none";
+
+      if (!enonce || !reponseCorrecte) {
+        errEl.textContent = "L'énoncé et la réponse correcte sont requis.";
+        errEl.style.display = "block";
+        return;
+      }
+
+      const payload = {
+        enonce,
+        option1: option1 || null,
+        option2: option2 || null,
+        option3: option3 || null,
+        option4: option4 || null,
+        reponseCorrecte,
+      };
+      const mode = questionFormMode[idModalite];
+
+      try {
+        if (mode.mode === "edit") {
+          await updateQuestionRequest(mode.id, payload);
+        } else {
+          await createQuestionRequest(idModalite, payload);
+        }
+        questionFormMode[idModalite] = null;
+        await loadQuestions(idModalite);
+      } catch (err) {
+        errEl.textContent = err.message || "Une erreur est survenue.";
+        errEl.style.display = "block";
+      }
+    }
+
+    async function removeQuestion(idModalite, id) {
+      if (!confirm("Supprimer cette question ?")) return;
+      try {
+        await deleteQuestionRequest(id);
+        await loadQuestions(idModalite);
+      } catch (err) {
+        alert("Impossible de supprimer : " + err.message);
+      }
+    }
+
+    // ---------- Vue Apprenant : répondre au quiz ----------
+
+    function renderQuiz(idModalite, questions) {
+      const resultat = quizResultat[idModalite];
+      const answered = quizAnswered[idModalite] || {};
+
+      const resultHtml = resultat && resultat.totalQuestions > 0 ? `
+        <div class="quiz-result-card">
+          <div class="stat"><span class="val">${resultat.bonnesReponses}/${resultat.totalQuestions}</span><span class="lbl">Bonnes réponses</span></div>
+          <div class="stat"><span class="val">${resultat.pourcentage.toFixed(0)}%</span><span class="lbl">Score</span></div>
+        </div>
+      ` : "";
+
+      if (!questions.length) {
+        return resultHtml + `<div class="empty-state">Aucune question dans cette modalité pour l'instant.</div>`;
+      }
+
+      const cards = questions.map((q) => {
+        const alreadyDone = answered[q.id];
+        const options = [q.option1, q.option2, q.option3, q.option4].filter(Boolean);
+
+        let bodyHtml;
+        if (alreadyDone) {
+          bodyHtml = `
+            <div class="quiz-feedback ${alreadyDone.correcte ? "ok" : "ko"}">
+              ${alreadyDone.correcte ? "✓ Bonne réponse" : "✗ Réponse incorrecte"} — vous avez répondu : « ${escapeHtml(alreadyDone.reponseDonnee)} »
+            </div>
+          `;
+        } else if (options.length) {
+          bodyHtml = `
+            <div class="quiz-options">
+              ${options.map((opt, i) => `
+                <label class="quiz-option">
+                  <input type="radio" name="quiz-q-${q.id}" value="${escapeHtml(opt)}" />
+                  ${escapeHtml(opt)}
+                </label>
+              `).join("")}
+            </div>
+            <button class="btn-primary" style="margin-top:0; width:auto; padding:0.5rem 1.2rem;" onclick="submitQuizAnswer(${idModalite}, ${q.id})">Valider</button>
+          `;
+        } else {
+          bodyHtml = `
+            <div class="field" style="margin-bottom:0.6rem;">
+              <input type="text" id="quiz-free-${q.id}" placeholder="Votre réponse…" />
+            </div>
+            <button class="btn-primary" style="margin-top:0; width:auto; padding:0.5rem 1.2rem;" onclick="submitQuizAnswer(${idModalite}, ${q.id})">Valider</button>
+          `;
+        }
+
+        return `
+          <div class="quiz-card">
+            <div class="quiz-enonce">${escapeHtml(q.enonce)}</div>
+            ${bodyHtml}
+          </div>
+        `;
+      }).join("");
+
+      return resultHtml + cards;
+    }
+
+    async function submitQuizAnswer(idModalite, idQuestion) {
+      const question = questionsCache[idModalite].find((q) => q.id === idQuestion);
+      const hasOptions = question.option1 || question.option2 || question.option3 || question.option4;
+
+      let reponseDonnee;
+      if (hasOptions) {
+        const checked = document.querySelector(`input[name="quiz-q-${idQuestion}"]:checked`);
+        if (!checked) {
+          alert("Choisissez une option avant de valider.");
+          return;
+        }
+        reponseDonnee = checked.value;
+      } else {
+        const input = document.getElementById(`quiz-free-${idQuestion}`);
+        reponseDonnee = input.value.trim();
+        if (!reponseDonnee) {
+          alert("Saisissez une réponse avant de valider.");
+          return;
+        }
+      }
+
+      try {
+        const before = quizResultat[idModalite]?.bonnesReponses ?? 0;
+        await repondreRequest(idQuestion, reponseDonnee);
+
+        // L'API ne renvoie que les stats agrégées (pas un booléen par réponse) :
+        // on déduit si CETTE réponse était correcte en comparant le compteur avant/après.
+        const after = await resultatRequest(idModalite);
+        const correcte = after.bonnesReponses > before;
+        quizResultat[idModalite] = after;
+
+        if (!quizAnswered[idModalite]) quizAnswered[idModalite] = {};
+        quizAnswered[idModalite][idQuestion] = { reponseDonnee, correcte };
+
+        renderQuestionsPanel(idModalite);
+      } catch (err) {
+        alert("Impossible d'envoyer la réponse : " + err.message);
+      }
+    }
+
+    init();
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,218 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Exercice / Examen — Plateforme de Formation</title>
+    <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+    <div class="app-shell">
+        <div class="dash-topbar">
+            <div class="brand">
+                <span class="brand-mark"></span>
+                PLATEFORME&nbsp;FORMATION
+            </div>
+            <div style="display:flex; align-items:center; gap:0.9rem;">
+                <a href="/formations.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">← Formations</a>
+                <span class="role-badge" id="role-badge">…</span>
+                <button class="btn-ghost" id="logout-btn">Se déconnecter</button>
+            </div>
+        </div>
+
+        <main class="app-main">
+            <h1 id="page-title">Exercice</h1>
+            <p class="page-subtitle" id="page-subtitle">Répondez à chaque question puis validez pour voir votre score.</p>
+
+            <div id="not-apprenant-notice" class="empty-state" style="display:none;">
+                Cette page est réservée aux apprenants.
+            </div>
+
+            <div id="quiz-content" style="display:none;">
+
+                <div id="quiz-error" class="empty-state" style="display:none; color:var(--rouge-correction);"></div>
+                <div id="quiz-loading" class="loading-text">Chargement des questions…</div>
+                <div id="quiz-empty" class="empty-state" style="display:none;">Aucune question dans cette modalité pour l'instant.</div>
+
+                <form id="quiz-form" style="display:none;">
+                    <div id="questions-container"></div>
+                    <div id="submit-error" class="empty-state" style="display:none; color:var(--rouge-correction);"></div>
+                    <button type="submit" class="btn-primary" style="width:auto; padding:0.75rem 1.6rem;" id="submit-btn">
+                        Valider mes réponses
+                    </button>
+                </form>
+
+                <div id="result-view" style="display:none;">
+                    <div class="quiz-result-card">
+                        <p class="section-label" style="text-align:center;">Résultat</p>
+                        <div class="quiz-result-score" id="result-score"></div>
+                        <div class="quiz-result-detail" id="result-detail"></div>
+                        <a href="/formations.html" class="btn-primary" style="display:inline-block; width:auto; padding:0.65rem 1.4rem; text-decoration:none; margin-top:0;">
+                            Retour aux formations
+                        </a>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script>
+    const auth = requireAuth();
+    const isApprenant = auth ? roleIn(auth.role, ["Apprenant"]) : false;
+
+    const params = new URLSearchParams(window.location.search);
+    const modaliteId = parseInt(params.get("id"), 10);
+    const modaliteTitre = params.get("titre") || "";
+    const modaliteType = params.get("type"); // "1" = Exercice, "2" = Examen
+
+    let questions = [];
+    const answers = {}; // idQuestion -> reponseDonnee
+
+    function escapeHtml(str) {
+      return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    async function init() {
+      if (!auth) return;
+      document.getElementById("role-badge").textContent = roleLabel(auth.role);
+      document.getElementById("logout-btn").addEventListener("click", () => {
+        clearAuth();
+        window.location.href = "/index.html";
+      });
+
+      if (!isApprenant) {
+        document.getElementById("not-apprenant-notice").style.display = "block";
+        return;
+      }
+
+      if (!modaliteId) {
+        document.getElementById("quiz-loading").style.display = "none";
+        showError("Aucune modalité indiquée dans l'URL.");
+        return;
+      }
+
+      document.getElementById("page-title").textContent = modaliteTitre
+        ? (modaliteType === "2" ? `Examen — ${modaliteTitre}` : `Exercice — ${modaliteTitre}`)
+        : "Exercice / Examen";
+
+      document.getElementById("quiz-content").style.display = "block";
+      document.getElementById("quiz-form").addEventListener("submit", submitQuiz);
+
+      try {
+        questions = await questionsByModaliteRequest(modaliteId);
+        document.getElementById("quiz-loading").style.display = "none";
+        renderQuestions();
+      } catch (err) {
+        document.getElementById("quiz-loading").style.display = "none";
+        showError("Impossible de charger les questions : " + err.message);
+      }
+    }
+
+    function showError(message) {
+      const el = document.getElementById("quiz-error");
+      el.textContent = message;
+      el.style.display = "block";
+    }
+
+    function renderQuestions() {
+      if (!questions.length) {
+        document.getElementById("quiz-empty").style.display = "block";
+        return;
+      }
+
+      const container = document.getElementById("questions-container");
+      container.innerHTML = questions.map((q, index) => {
+        const options = [q.option1, q.option2, q.option3, q.option4].filter(Boolean);
+
+        const optionsHtml = options.length
+          ? options.map((opt) => `
+              <label class="quiz-option" data-question="${q.id}">
+                <input type="radio" name="q-${q.id}" value="${escapeHtml(opt)}" />
+                <span>${escapeHtml(opt)}</span>
+              </label>
+            `).join("")
+          : `<input type="text" class="quiz-open-input" name="q-${q.id}" placeholder="Votre réponse…" />`;
+
+        return `
+          <div class="quiz-question-card">
+            <div class="q-index">Question ${index + 1} / ${questions.length}</div>
+            <div class="q-enonce">${escapeHtml(q.enonce)}</div>
+            ${optionsHtml}
+          </div>
+        `;
+      }).join("");
+
+      // Feedback visuel de sélection pour les QCM
+      container.querySelectorAll('input[type="radio"]').forEach((input) => {
+        input.addEventListener("change", () => {
+          const questionId = input.closest(".quiz-question-card").querySelector(".quiz-option").dataset.question;
+          container.querySelectorAll(`.quiz-option[data-question="${questionId}"]`).forEach((label) => {
+            label.classList.remove("selected");
+          });
+          input.closest(".quiz-option").classList.add("selected");
+        });
+      });
+
+      document.getElementById("quiz-form").style.display = "block";
+    }
+
+    async function submitQuiz(e) {
+      e.preventDefault();
+      const errEl = document.getElementById("submit-error");
+      errEl.style.display = "none";
+
+      // Collecte des réponses depuis le formulaire
+      const container = document.getElementById("questions-container");
+      const missing = [];
+      questions.forEach((q) => {
+        const radio = container.querySelector(`input[name="q-${q.id}"]:checked`);
+        const textInput = container.querySelector(`input.quiz-open-input[name="q-${q.id}"]`);
+        const value = radio ? radio.value : (textInput ? textInput.value.trim() : "");
+        if (!value) {
+          missing.push(q.id);
+        } else {
+          answers[q.id] = value;
+        }
+      });
+
+      if (missing.length) {
+        errEl.textContent = "Merci de répondre à toutes les questions avant de valider.";
+        errEl.style.display = "block";
+        return;
+      }
+
+      const submitBtn = document.getElementById("submit-btn");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Envoi des réponses…";
+
+      try {
+        // Les réponses sont envoyées une par une (l'API ne prend qu'une réponse à la fois)
+        for (const q of questions) {
+          await repondreRequest({ idQuestion: q.id, reponseDonnee: answers[q.id] });
+        }
+        const resultat = await resultatRequest(modaliteId);
+        showResult(resultat);
+      } catch (err) {
+        errEl.textContent = "Erreur lors de l'envoi : " + err.message;
+        errEl.style.display = "block";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Valider mes réponses";
+      }
+    }
+
+    function showResult(resultat) {
+      document.getElementById("quiz-form").style.display = "none";
+      document.getElementById("result-view").style.display = "block";
+      document.getElementById("result-score").textContent = `${Math.round(resultat.pourcentage)}%`;
+      document.getElementById("result-detail").textContent =
+        `${resultat.bonnesReponses} / ${resultat.totalQuestions} bonnes réponses`;
+    }
+
+    init();
+    </script>
+</body>
+</html>

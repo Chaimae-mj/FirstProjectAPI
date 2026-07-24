@@ -1,0 +1,142 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Créer un compte — Plateforme de Formation</title>
+  <link rel="stylesheet" href="/css/style.css?v=3" />
+</head>
+<body>
+  <div class="auth-shell">
+    <!-- Panneau gauche : tableau vert -->
+    <section class="auth-panel-tableau">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        PLATEFORME&nbsp;FORMATION
+      </div>
+
+      <div class="tableau-content">
+        <p class="eyebrow">Nouvel arrivant</p>
+        <h1 class="tableau-headline">Ouvrez<br />votre cahier.</h1>
+        <svg class="chalk-underline" viewBox="0 0 220 14" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 8 C 40 3, 80 12, 120 6 C 150 2, 180 10, 216 5" />
+        </svg>
+        <p class="tableau-tagline">
+          La création de compte vous inscrit comme Apprenant.
+          Les comptes Formateur et Admin sont créés par un administrateur.
+        </p>
+      </div>
+
+      <p class="tableau-footer">Session sécurisée — JWT</p>
+    </section>
+
+    <!-- Panneau droit : formulaire (cahier) -->
+    <section class="auth-panel-cahier">
+      <div class="auth-card">
+        <h1>Créer un compte</h1>
+        <p class="subtitle">Quelques informations pour démarrer.</p>
+
+        <div class="alert alert-error" id="alert-error"></div>
+
+        <form id="register-form" novalidate>
+          <div class="field" id="field-name">
+            <label for="name">Nom complet</label>
+            <input type="text" id="name" name="name" placeholder="Jean Dupont" autocomplete="name" required maxlength="100" />
+            <div class="error-msg">Le nom est requis.</div>
+          </div>
+
+          <div class="field" id="field-email">
+            <label for="email">Adresse e-mail</label>
+            <input type="email" id="email" name="email" placeholder="vous@exemple.com" autocomplete="email" required maxlength="150" />
+            <div class="error-msg">Adresse e-mail invalide.</div>
+          </div>
+
+          <div class="field" id="field-password">
+            <label for="password">Mot de passe</label>
+            <input type="password" id="password" name="password" placeholder="6 caractères minimum" autocomplete="new-password" required minlength="6" />
+            <div class="error-msg">Le mot de passe doit contenir au moins 6 caractères.</div>
+          </div>
+
+          <button type="submit" class="btn-primary" id="submit-btn">Créer mon compte</button>
+        </form>
+
+        <p class="auth-switch">
+          Déjà inscrit ? <a href="/index.html">Se connecter</a>
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <script src="/js/api.js?v=3"></script>
+  <script>
+    if (getAuth()?.token) {
+      window.location.href = "/dashboard.html";
+    }
+
+    const form = document.getElementById("register-form");
+    const submitBtn = document.getElementById("submit-btn");
+    const alertError = document.getElementById("alert-error");
+    const fieldName = document.getElementById("field-name");
+    const fieldEmail = document.getElementById("field-email");
+    const fieldPassword = document.getElementById("field-password");
+
+    function clearFieldErrors() {
+      fieldName.classList.remove("has-error");
+      fieldEmail.classList.remove("has-error");
+      fieldPassword.classList.remove("has-error");
+      alertError.classList.remove("show");
+      alertError.textContent = "";
+    }
+
+    function validate(name, email, password) {
+      let ok = true;
+      if (!name) {
+        fieldName.classList.add("has-error");
+        ok = false;
+      }
+      const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      if (!emailOk) {
+        fieldEmail.classList.add("has-error");
+        ok = false;
+      }
+      if (!password || password.length < 6) {
+        fieldPassword.classList.add("has-error");
+        ok = false;
+      }
+      return ok;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearFieldErrors();
+
+      const name = document.getElementById("name").value.trim();
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+
+      if (!validate(name, email, password)) return;
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Création…";
+
+      try {
+        const auth = await registerRequest({ name, email, password });
+        saveAuth(auth);
+        window.location.href = "/dashboard.html";
+      } catch (err) {
+        if (err.status === 409) {
+          alertError.textContent = "Un compte existe déjà avec cet e-mail.";
+        } else if (err.status === 400) {
+          alertError.textContent = "Certaines informations sont invalides. Vérifiez le formulaire.";
+        } else {
+          alertError.textContent = err.message || "Une erreur est survenue. Réessayez.";
+        }
+        alertError.classList.add("show");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Créer mon compte";
+      }
+    });
+  </script>
+</body>
+</html>
+

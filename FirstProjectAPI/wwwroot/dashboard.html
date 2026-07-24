@@ -1,0 +1,180 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tableau de bord — Plateforme de Formation</title>
+    <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+    <div class="dash-shell">
+        <div class="dash-topbar">
+            <div class="brand">
+                <span class="brand-mark"></span>
+                PLATEFORME&nbsp;FORMATION
+            </div>
+            <div style="display:flex; align-items:center; gap:0.9rem;">
+                <a href="/formations.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">Formations</a>
+                <a href="/sessions.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">Sessions</a>
+                <a href="/avatar.html" class="btn-ghost" id="avatar-link" style="text-decoration:none; display:none;">Avatar IA</a>
+                <span class="role-badge" id="role-badge">…</span>
+                <button class="btn-ghost" id="logout-btn">Se déconnecter</button>
+            </div>
+        </div>
+
+        <div id="loading" class="dash-loading">Vérification de la session…</div>
+        <div id="error" class="dash-error" style="display:none;"></div>
+
+        <main class="app-main" id="dash-main" style="display:none; max-width:920px;">
+
+            <div class="hero-tableau">
+                <p class="eyebrow" id="hero-eyebrow">Espace personnel</p>
+                <h1>Bonjour, <span id="user-name"></span></h1>
+                <p class="hero-tagline" id="hero-tagline"></p>
+            </div>
+
+            <p class="section-label">Accès rapides</p>
+            <div class="quick-links-grid" id="quick-links-grid"></div>
+
+            <!-- Section statistiques : affichée uniquement pour le rôle Admin -->
+            <section id="stats-section" style="display:none;">
+                <p class="section-label">Statistiques globales</p>
+                <div id="stats-loading" class="loading-text">Chargement des statistiques…</div>
+                <div id="stats-error" class="empty-state" style="display:none; color:var(--rouge-correction);"></div>
+                <div class="stats-grid" id="stats-grid" style="display:none;"></div>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script>
+    const auth = requireAuth();
+
+    const loadingEl = document.getElementById("loading");
+    const errorEl = document.getElementById("error");
+    const mainEl = document.getElementById("dash-main");
+    const roleBadge = document.getElementById("role-badge");
+    const logoutBtn = document.getElementById("logout-btn");
+    const heroEyebrow = document.getElementById("hero-eyebrow");
+    const heroTagline = document.getElementById("hero-tagline");
+    const quickLinksGrid = document.getElementById("quick-links-grid");
+    const statsSection = document.getElementById("stats-section");
+    const statsLoading = document.getElementById("stats-loading");
+    const statsError = document.getElementById("stats-error");
+    const statsGrid = document.getElementById("stats-grid");
+
+    const STAT_LABELS = {
+      totalUsers: "Utilisateurs",
+      totalFormateurs: "Formateurs",
+      totalFormations: "Formations",
+      totalModules: "Modules",
+      totalQuestions: "Questions",
+      totalSessions: "Sessions",
+      totalInscriptions: "Inscriptions",
+    };
+
+    // Cartes d'accès rapide par rôle : icône, titre, description, lien
+    const QUICK_LINKS = {
+      Admin: [
+        { icon: "📚", title: "Formations", desc: "Créer et organiser formations, modules et modalités.", href: "/formations.html" },
+        { icon: "🗓️", title: "Sessions", desc: "Planifier des sessions et suivre les inscriptions.", href: "/sessions.html" },
+        { icon: "🗂️", title: "Catégories & Formateurs", desc: "Gérer les référentiels utilisés par les formations.", href: "/referentiels.html" },
+      ],
+      Formateur: [
+        { icon: "📚", title: "Formations", desc: "Consulter et enrichir vos formations, modules et modalités.", href: "/formations.html" },
+        { icon: "🗓️", title: "Sessions", desc: "Voir les sessions planifiées et leurs participants.", href: "/sessions.html" },
+      ],
+      Apprenant: [
+        { icon: "📚", title: "Formations", desc: "Parcourir les formations disponibles et leur contenu.", href: "/formations.html" },
+        { icon: "🗓️", title: "Sessions", desc: "S'inscrire à une session et suivre ses inscriptions.", href: "/sessions.html" },
+        { icon: "🤖", title: "Avatar IA", desc: "Poser une question en direct au formateur IA, en vidéo et à l'oral.", href: "/avatar.html" },
+      ],
+    };
+
+    const HERO_TAGLINES = {
+      Admin: "Vue d'ensemble de la plateforme : formations, sessions et référentiels.",
+      Formateur: "Retrouvez vos formations et vos sessions à venir.",
+      Apprenant: "Continuez votre parcours de formation là où vous l'avez laissé.",
+    };
+
+    function renderQuickLinks(role) {
+      const links = QUICK_LINKS[role] || [];
+      quickLinksGrid.innerHTML = links.map((l) => `
+        <a class="quick-link-card" href="${l.href}">
+          <span class="qlc-icon">${l.icon}</span>
+          <div class="qlc-title">${l.title}</div>
+          <p class="qlc-desc">${l.desc}</p>
+        </a>
+      `).join("");
+    }
+
+    function renderStats(stats) {
+      statsGrid.innerHTML = "";
+      for (const [key, label] of Object.entries(STAT_LABELS)) {
+        const value = stats[key] ?? 0;
+        const card = document.createElement("div");
+        card.className = "stat-card";
+        card.innerHTML =
+          '<div class="stat-value">' + value + '</div>' +
+          '<div class="stat-label">' + label + '</div>';
+        statsGrid.appendChild(card);
+      }
+      statsLoading.style.display = "none";
+      statsGrid.style.display = "grid";
+    }
+
+    async function loadAdminStats() {
+      statsSection.style.display = "block";
+      try {
+        const stats = await dashboardStatsRequest();
+        renderStats(stats);
+      } catch (err) {
+        statsLoading.style.display = "none";
+        statsError.textContent = "Impossible de charger les statistiques : " + err.message;
+        statsError.style.display = "block";
+      }
+    }
+
+    if (auth) {
+      const roleName = roleLabel(auth.role);
+      roleBadge.textContent = roleName;
+
+      if (roleIn(auth.role, ["Apprenant"])) {
+        document.getElementById("avatar-link").style.display = "inline-block";
+      }
+
+      logoutBtn.addEventListener("click", () => {
+        clearAuth();
+        window.location.href = "/index.html";
+      });
+
+      meRequest()
+        .then((me) => {
+          const displayName = me.name || auth.name;
+          document.getElementById("user-name").textContent = displayName;
+          heroEyebrow.textContent = roleName;
+          heroTagline.textContent = HERO_TAGLINES[roleName] || "";
+          renderQuickLinks(roleName);
+
+          loadingEl.style.display = "none";
+          mainEl.style.display = "block";
+
+          if (roleName === "Admin") {
+            loadAdminStats();
+          }
+        })
+        .catch((err) => {
+          loadingEl.style.display = "none";
+          if (err.status === 401) {
+            clearAuth();
+            window.location.href = "/index.html";
+            return;
+          }
+          errorEl.textContent = "Impossible de charger votre profil : " + err.message;
+          errorEl.style.display = "block";
+        });
+    }
+    </script>
+</body>
+</html>

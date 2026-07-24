@@ -1,0 +1,467 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Catégories & Formateurs — Plateforme de Formation</title>
+    <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+    <div class="app-shell">
+        <div class="dash-topbar">
+            <div class="brand">
+                <span class="brand-mark"></span>
+                PLATEFORME&nbsp;FORMATION
+            </div>
+            <div style="display:flex; align-items:center; gap:0.9rem;">
+                <a href="/dashboard.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">← Tableau de bord</a>
+                <a href="/formations.html" class="btn-ghost" style="text-decoration:none; display:inline-block;">Formations</a>
+                <span class="role-badge" id="role-badge">…</span>
+                <button class="btn-ghost" id="logout-btn">Se déconnecter</button>
+            </div>
+        </div>
+
+        <main class="app-main">
+            <h1>Catégories &amp; Formateurs</h1>
+            <p class="page-subtitle">
+                Ces deux listes servent à créer des formations : chaque formation
+                appartient à une catégorie et peut être assignée à un formateur.
+            </p>
+
+            <div id="not-admin-notice" class="empty-state" style="display:none;">
+                Cette page est réservée aux administrateurs.
+            </div>
+
+            <div id="admin-content" style="display:none;">
+
+                <!-- ===================== CATÉGORIES ===================== -->
+                <section style="margin-bottom:2.6rem;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem;">
+                        <h2 style="font-family:'Fraunces', serif; font-size:1.2rem; margin:0;">Catégories</h2>
+                        <button class="btn-add" id="add-categorie-btn">+ Nouvelle catégorie</button>
+                    </div>
+
+                    <div id="categorie-form-slot"></div>
+
+                    <div id="categories-loading" class="loading-text">Chargement…</div>
+                    <div id="categories-error" class="empty-state" style="display:none; color:var(--rouge-correction);"></div>
+                    <div class="list-card" id="categories-list" style="display:none;"></div>
+                    <div id="categories-empty" class="empty-state" style="display:none;">Aucune catégorie pour l'instant.</div>
+                </section>
+
+                <!-- ===================== FORMATEURS ===================== -->
+                <section>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem;">
+                        <h2 style="font-family:'Fraunces', serif; font-size:1.2rem; margin:0;">Formateurs</h2>
+                        <button class="btn-add" id="add-formateur-btn">+ Nouveau formateur</button>
+                    </div>
+
+                    <div id="formateur-form-slot"></div>
+
+                    <div id="formateurs-loading" class="loading-text">Chargement…</div>
+                    <div id="formateurs-error" class="empty-state" style="display:none; color:var(--rouge-correction);"></div>
+                    <div class="list-card" id="formateurs-list" style="display:none;"></div>
+                    <div id="formateurs-empty" class="empty-state" style="display:none;">Aucun formateur pour l'instant.</div>
+                </section>
+
+                <!-- ===================== COMPTES ADMIN / FORMATEUR ===================== -->
+                <section>
+                    <div style="margin-bottom:0.8rem;">
+                        <h2 style="font-family:'Fraunces', serif; font-size:1.2rem; margin:0 0 0.3rem;">Comptes Admin &amp; Formateur</h2>
+                        <p style="color:var(--encre-douce); font-size:0.88rem; margin:0;">
+                            Crée un compte avec un accès Admin ou Formateur. Pour un compte Apprenant, la personne peut s'inscrire elle-même depuis la page de connexion.
+                        </p>
+                    </div>
+
+                    <div id="staff-success" class="alert alert-success" style="max-width:none;"></div>
+                    <div class="inline-form">
+                        <div class="form-row">
+                            <div class="field">
+                                <label for="staff-nom">Nom complet</label>
+                                <input type="text" id="staff-nom" placeholder="Jean Dupont" />
+                            </div>
+                            <div class="field" style="max-width:160px;">
+                                <label for="staff-role">Rôle</label>
+                                <select id="staff-role">
+                                    <option value="1">Formateur</option>
+                                    <option value="2">Admin</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="field">
+                                <label for="staff-email">E-mail</label>
+                                <input type="email" id="staff-email" placeholder="jean.dupont@exemple.com" />
+                            </div>
+                            <div class="field">
+                                <label for="staff-password">Mot de passe</label>
+                                <input type="password" id="staff-password" placeholder="6 caractères minimum" />
+                            </div>
+                        </div>
+                        <div id="staff-form-error" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+                        <div class="form-actions">
+                            <button class="btn-primary" style="margin-top:0;" id="staff-submit-btn" onclick="submitStaffForm()">Créer le compte</button>
+                        </div>
+                    </div>
+                </section>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script>
+        const auth = requireAuth();
+        const isAdmin = auth ? roleIn(auth.role, ["Admin"]) : false;
+
+        let categories = [];
+        let formateurs = [];
+        let categorieFormMode = null; // null | { mode: "add" } | { mode: "edit", id }
+        let formateurFormMode = null;
+
+        function escapeHtml(str) {
+            return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+            }[c]));
+        }
+
+        async function init() {
+            if (!auth) return;
+            document.getElementById("role-badge").textContent = roleLabel(auth.role);
+            document.getElementById("logout-btn").addEventListener("click", () => {
+                clearAuth();
+                window.location.href = "/index.html";
+            });
+
+            if (!isAdmin) {
+                document.getElementById("not-admin-notice").style.display = "block";
+                return;
+            }
+            document.getElementById("admin-content").style.display = "block";
+
+            document.getElementById("add-categorie-btn").addEventListener("click", () => {
+                categorieFormMode = { mode: "add" };
+                renderCategorieForm();
+            });
+            document.getElementById("add-formateur-btn").addEventListener("click", () => {
+                formateurFormMode = { mode: "add" };
+                renderFormateurForm();
+            });
+
+            await Promise.all([loadCategories(), loadFormateurs()]);
+        }
+
+        // ================= CATÉGORIES =================
+
+        async function loadCategories() {
+            try {
+                categories = await categoriesRequest();
+                document.getElementById("categories-loading").style.display = "none";
+                renderCategoriesList();
+            } catch (err) {
+                document.getElementById("categories-loading").style.display = "none";
+                const errEl = document.getElementById("categories-error");
+                errEl.textContent = "Impossible de charger les catégories : " + err.message;
+                errEl.style.display = "block";
+            }
+        }
+
+        function renderCategoriesList() {
+            const listEl = document.getElementById("categories-list");
+            const emptyEl = document.getElementById("categories-empty");
+
+            if (!categories.length) {
+                listEl.style.display = "none";
+                emptyEl.style.display = "block";
+                return;
+            }
+            emptyEl.style.display = "none";
+            listEl.style.display = "block";
+
+            listEl.innerHTML = categories.map((c) => `
+            <div class="list-row">
+              <div class="list-row-main" style="cursor:default;">
+                <span class="chevron" style="visibility:hidden;">▶</span>
+                <div class="row-title">
+                  <div class="titre">${escapeHtml(c.name)}</div>
+                </div>
+                <div class="row-actions">
+                  <button class="icon-btn" title="Modifier" onclick="editCategorie(${c.id})">✎</button>
+                  <button class="icon-btn danger" title="Supprimer" onclick="removeCategorie(${c.id})">🗑</button>
+                </div>
+              </div>
+            </div>
+          `).join("");
+        }
+
+        function renderCategorieForm() {
+            const slot = document.getElementById("categorie-form-slot");
+            if (!categorieFormMode) {
+                slot.innerHTML = "";
+                return;
+            }
+            const isEdit = categorieFormMode.mode === "edit";
+            const editing = isEdit ? categories.find((c) => c.id === categorieFormMode.id) : null;
+
+            slot.innerHTML = `
+            <div class="inline-form">
+              <div class="field">
+                <label for="categorie-name">Nom de la catégorie</label>
+                <input type="text" id="categorie-name" value="${editing ? escapeHtml(editing.name) : ""}" placeholder="Ex. Développement Web" />
+              </div>
+              <div id="categorie-form-error" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+              <div class="form-actions">
+                <button class="btn-primary" style="margin-top:0;" onclick="submitCategorieForm()">${isEdit ? "Enregistrer" : "Créer"}</button>
+                <button class="btn-cancel" onclick="cancelCategorieForm()">Annuler</button>
+              </div>
+            </div>
+          `;
+        }
+
+        function cancelCategorieForm() {
+            categorieFormMode = null;
+            renderCategorieForm();
+        }
+
+        function editCategorie(id) {
+            categorieFormMode = { mode: "edit", id };
+            renderCategorieForm();
+        }
+
+        async function submitCategorieForm() {
+            const name = document.getElementById("categorie-name").value.trim();
+            const errEl = document.getElementById("categorie-form-error");
+            errEl.style.display = "none";
+
+            if (!name) {
+                errEl.textContent = "Le nom est requis.";
+                errEl.style.display = "block";
+                return;
+            }
+
+            try {
+                if (categorieFormMode.mode === "edit") {
+                    await updateCategorieRequest(categorieFormMode.id, { name });
+                } else {
+                    await createCategorieRequest({ name });
+                }
+                categorieFormMode = null;
+                renderCategorieForm();
+                await loadCategories();
+            } catch (err) {
+                errEl.textContent = err.message || "Une erreur est survenue.";
+                errEl.style.display = "block";
+            }
+        }
+
+        async function removeCategorie(id) {
+            if (!confirm("Supprimer cette catégorie ? Cela échouera si des formations y sont encore rattachées.")) return;
+            try {
+                await deleteCategorieRequest(id);
+                await loadCategories();
+            } catch (err) {
+                alert("Impossible de supprimer : " + err.message);
+            }
+        }
+
+        // ================= FORMATEURS =================
+
+        async function loadFormateurs() {
+            try {
+                formateurs = await formateursRequest();
+                document.getElementById("formateurs-loading").style.display = "none";
+                renderFormateursList();
+            } catch (err) {
+                document.getElementById("formateurs-loading").style.display = "none";
+                const errEl = document.getElementById("formateurs-error");
+                errEl.textContent = "Impossible de charger les formateurs : " + err.message;
+                errEl.style.display = "block";
+            }
+        }
+
+        function renderFormateursList() {
+            const listEl = document.getElementById("formateurs-list");
+            const emptyEl = document.getElementById("formateurs-empty");
+
+            if (!formateurs.length) {
+                listEl.style.display = "none";
+                emptyEl.style.display = "block";
+                return;
+            }
+            emptyEl.style.display = "none";
+            listEl.style.display = "block";
+
+            listEl.innerHTML = formateurs.map((f) => `
+            <div class="list-row">
+              <div class="list-row-main" style="cursor:default;">
+                <span class="chevron" style="visibility:hidden;">▶</span>
+                <div class="row-title">
+                  <div class="titre">${escapeHtml(f.prenom)} ${escapeHtml(f.nom)}</div>
+                  <div class="meta">${escapeHtml(f.email)}${f.specialite ? " · " + escapeHtml(f.specialite) : ""}${f.telephone ? " · " + escapeHtml(f.telephone) : ""}</div>
+                </div>
+                <div class="row-actions">
+                  <button class="icon-btn" title="Modifier" onclick="editFormateur(${f.id})">✎</button>
+                  <button class="icon-btn danger" title="Supprimer" onclick="removeFormateur(${f.id})">🗑</button>
+                </div>
+              </div>
+            </div>
+          `).join("");
+        }
+
+        function renderFormateurForm() {
+            const slot = document.getElementById("formateur-form-slot");
+            if (!formateurFormMode) {
+                slot.innerHTML = "";
+                return;
+            }
+            const isEdit = formateurFormMode.mode === "edit";
+            const editing = isEdit ? formateurs.find((f) => f.id === formateurFormMode.id) : null;
+
+            slot.innerHTML = `
+            <div class="inline-form">
+              <div class="form-row">
+                <div class="field">
+                  <label for="formateur-prenom">Prénom</label>
+                  <input type="text" id="formateur-prenom" value="${editing ? escapeHtml(editing.prenom) : ""}" placeholder="Jean" />
+                </div>
+                <div class="field">
+                  <label for="formateur-nom">Nom</label>
+                  <input type="text" id="formateur-nom" value="${editing ? escapeHtml(editing.nom) : ""}" placeholder="Dupont" />
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="field">
+                  <label for="formateur-email">E-mail</label>
+                  <input type="email" id="formateur-email" value="${editing ? escapeHtml(editing.email) : ""}" placeholder="jean.dupont@exemple.com" />
+                </div>
+                <div class="field">
+                  <label for="formateur-telephone">Téléphone (optionnel)</label>
+                  <input type="text" id="formateur-telephone" value="${editing && editing.telephone ? escapeHtml(editing.telephone) : ""}" placeholder="+212 6 00 00 00 00" />
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="field">
+                  <label for="formateur-specialite">Spécialité (optionnel)</label>
+                  <input type="text" id="formateur-specialite" value="${editing && editing.specialite ? escapeHtml(editing.specialite) : ""}" placeholder="Développement Web" />
+                </div>
+                <div class="field">
+                  <label for="formateur-photo">URL photo (optionnel)</label>
+                  <input type="text" id="formateur-photo" value="${editing && editing.photo ? escapeHtml(editing.photo) : ""}" placeholder="https://..." />
+                </div>
+              </div>
+              <div id="formateur-form-error" class="empty-state" style="display:none; color:var(--rouge-correction); padding:0 0 0.6rem;"></div>
+              <div class="form-actions">
+                <button class="btn-primary" style="margin-top:0;" onclick="submitFormateurForm()">${isEdit ? "Enregistrer" : "Créer"}</button>
+                <button class="btn-cancel" onclick="cancelFormateurForm()">Annuler</button>
+              </div>
+            </div>
+          `;
+        }
+
+        function cancelFormateurForm() {
+            formateurFormMode = null;
+            renderFormateurForm();
+        }
+
+        function editFormateur(id) {
+            formateurFormMode = { mode: "edit", id };
+            renderFormateurForm();
+        }
+
+        async function submitFormateurForm() {
+            const nom = document.getElementById("formateur-nom").value.trim();
+            const prenom = document.getElementById("formateur-prenom").value.trim();
+            const email = document.getElementById("formateur-email").value.trim();
+            const telephone = document.getElementById("formateur-telephone").value.trim();
+            const specialite = document.getElementById("formateur-specialite").value.trim();
+            const photo = document.getElementById("formateur-photo").value.trim();
+            const errEl = document.getElementById("formateur-form-error");
+            errEl.style.display = "none";
+
+            const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+            if (!nom || !prenom || !emailOk) {
+                errEl.textContent = "Nom, prénom et un e-mail valide sont requis.";
+                errEl.style.display = "block";
+                return;
+            }
+
+            const payload = {
+                nom, prenom, email,
+                telephone: telephone || null,
+                specialite: specialite || null,
+                photo: photo || null,
+            };
+
+            try {
+                if (formateurFormMode.mode === "edit") {
+                    await updateFormateurRequest(formateurFormMode.id, payload);
+                } else {
+                    await createFormateurRequest(payload);
+                }
+                formateurFormMode = null;
+                renderFormateurForm();
+                await loadFormateurs();
+            } catch (err) {
+                errEl.textContent = err.message || "Une erreur est survenue.";
+                errEl.style.display = "block";
+            }
+        }
+
+        async function removeFormateur(id) {
+            if (!confirm("Supprimer ce formateur ?")) return;
+            try {
+                await deleteFormateurRequest(id);
+                await loadFormateurs();
+            } catch (err) {
+                alert("Impossible de supprimer : " + err.message);
+            }
+        }
+
+        // ================= COMPTES ADMIN / FORMATEUR =================
+
+        async function submitStaffForm() {
+            const name = document.getElementById("staff-nom").value.trim();
+            const email = document.getElementById("staff-email").value.trim();
+            const password = document.getElementById("staff-password").value;
+            const role = parseInt(document.getElementById("staff-role").value, 10);
+            const errEl = document.getElementById("staff-form-error");
+            const successEl = document.getElementById("staff-success");
+            const submitBtn = document.getElementById("staff-submit-btn");
+
+            errEl.style.display = "none";
+            successEl.classList.remove("show");
+
+            const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+            if (!name || !emailOk || !password || password.length < 6) {
+                errEl.textContent = "Nom, e-mail valide et mot de passe (6 caractères min.) sont requis.";
+                errEl.style.display = "block";
+                return;
+            }
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = "Création…";
+
+            try {
+                const result = await registerStaffRequest({ name, email, password, role });
+                successEl.textContent = `Compte créé : ${result.name || name} (${roleLabel(result.role ?? role)}) — ${email}`;
+                successEl.classList.add("show");
+                document.getElementById("staff-nom").value = "";
+                document.getElementById("staff-email").value = "";
+                document.getElementById("staff-password").value = "";
+            } catch (err) {
+                if (err.status === 409) {
+                    errEl.textContent = "Un compte existe déjà avec cet e-mail.";
+                } else {
+                    errEl.textContent = err.message || "Une erreur est survenue.";
+                }
+                errEl.style.display = "block";
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Créer le compte";
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
